@@ -1,0 +1,61 @@
+jira_query:
+  jql: >
+      assignee = currentUser() AND project = YOUR_PROJECT
+      AND status NOT IN (Done)
+      ORDER BY priority DESC, created DESC
+  maxResults: 100
+  fields:
+    - summary
+    - creator
+    - priority
+    - status
+    - created
+    - duedate
+
+notion_query:
+  filter:                         # Notion DB 필터 조건 (선택)
+    property: 상태                 # Notion 컬럼명
+    status:
+      does_not_equal: 완료         # 제외할 상태값
+  sorts:                          # 정렬 (선택)
+    - property: 생성일
+      direction: descending       # ascending | descending
+  page_size: 100                  # 한 번에 가져올 페이지 수 (최대 100, 선택)
+  filter_properties:              # 응답에 포함할 컬럼 (null이면 전체, 선택)
+    - issue
+    - 제목
+    - 담당자
+    - 우선 순위
+    - 상태
+    - 생성일
+    - 마감일
+
+mappings:
+  # notion_type: title 항목이 upsert 키 (필수, 정확히 1개)
+  - jira_field: key               # 점 표기법 지원: key, fields.summary, fields.status.name 등
+    notion_property: issue        # Notion DB 컬럼명
+    notion_type: title            # title | rich_text | select | status | date | url
+
+  - jira_field: fields.summary
+    notion_property: 제목
+    notion_type: rich_text
+
+  - jira_field: fields.creator.displayName
+    notion_property: 담당자
+    notion_type: rich_text
+
+  - jira_field: fields.priority.name
+    notion_property: 우선 순위
+    notion_type: select
+
+  - jira_field: fields.status.name
+    notion_property: 상태
+    notion_type: status
+
+  - jira_field: fields.created
+    notion_property: 생성일
+    notion_type: date
+
+  - jira_field: fields.duedate
+    notion_property: 마감일
+    notion_type: date

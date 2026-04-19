@@ -1,4 +1,5 @@
 .env
+sync_config.yaml
 sync.log
 __pycache__/
 .pytest_cache/

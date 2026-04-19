@@ -12,6 +12,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # 의존성 설치
 pip install -r requirements.txt
 
+# 설정 파일 초기화
+cp .env.example .env
+cp sync_config.example.yaml sync_config.yaml
+
 # 실제 동기화 실행
 python sync.py
 

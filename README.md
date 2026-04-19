@@ -138,6 +138,16 @@ NOTION_API_KEY=secret_your-notion-integration-key
 NOTION_DATA_SOURCE_ID=your-notion-data-source-id
 ```
 
+## 동기화 설정
+
+`sync_config.example.yaml`을 복사해 `sync_config.yaml`을 작성합니다.
+
+```bash
+cp sync_config.example.yaml sync_config.yaml
+```
+
+이후 `jira_query.jql`, `notion_query`, `mappings`를 프로젝트에 맞게 수정합니다.
+
 ## 사용법
 
 ```bash
