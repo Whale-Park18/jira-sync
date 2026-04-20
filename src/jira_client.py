@@ -27,29 +27,47 @@ class JiraClient:
         self.config = config
 
     def issue_search(self) -> List[Issue]:
-        """Jira 이슈 검색 후 Issue 목록 반환.
+        """Jira 이슈 검색 후 Issue 목록 반환 (nextPageToken 기반 페이지네이션).
 
         Returns:
             조회된 Issue 객체 리스트 (오류 시 빈 리스트)
         """
-        response = requests.post(
-            url=f"{self.env.jira_url}{JiraApi.BASE}{JiraApi.ISSUE_SEARCH}",
-            auth=HTTPBasicAuth(self.env.jira_email, self.env.jira_api_token),
-            json={
+        url = f"{self.env.jira_url}{JiraApi.BASE}{JiraApi.ISSUE_SEARCH}"
+        auth = HTTPBasicAuth(self.env.jira_email, self.env.jira_api_token)
+
+        all_issues: List[Issue] = []
+        next_page_token: str | None = None
+
+        while True:
+            # nextPageToken이 있으면 body에 포함해 다음 페이지 요청
+            body = {
                 "jql": self.config.query.jql,
                 "maxResults": self.config.query.max_results,
                 "fields": self.config.query.fields,
             }
-        )
+            if next_page_token:
+                body["nextPageToken"] = next_page_token
 
-        # 200: OK
-        if response.status_code != 200:
-            logger.error(f"Jira API 오류 {response.status_code}: {response.text}")
-            return []
+            response = requests.post(url=url, auth=auth, json=body)
 
-        issues = [
-            Issue(key=raw["key"], fields=raw.get("fields", {}))
-            for raw in response.json().get("issues", [])
-        ]
-        
-        return issues
+            # 200: OK
+            if response.status_code != 200:
+                logger.error(f"Jira API 오류 {response.status_code}: {response.text}")
+                return []
+
+            data = response.json()
+            issues = [
+                Issue(key=raw["key"], fields=raw.get("fields", {}))
+                for raw in data.get("issues", [])
+            ]
+            all_issues.extend(issues)
+
+            # nextPageToken이 없으면 마지막 페이지
+            next_page_token = data.get("nextPageToken")
+            if not next_page_token:
+                break
+
+            logger.debug(f"다음 페이지 조회 중 (현재까지 {len(all_issues)}건)")
+
+        logger.info(f"Jira 이슈 총 {len(all_issues)}건 조회 완료")
+        return all_issues
