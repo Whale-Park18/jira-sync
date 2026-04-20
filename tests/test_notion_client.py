@@ -187,3 +187,96 @@ class TestUpsert:
         ]
         issues = [Issue(key="ERR-1", fields={"summary": "오류", "status": {"name": "할 일"}})]
         db.upsert(issues, mappings)  # 예외 없이 종료되어야 함
+
+
+# ──────────────────────────────────────────────
+# _lookup_pages
+# ──────────────────────────────────────────────
+
+class TestLookupPages:
+
+    @patch("notion_client.requests.post")
+    def test_filter_stripped_from_lookup(self, mock_post, db):
+        """notion_query의 filter가 lookup 요청 body에 포함되지 않아야 함."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"results": [], "has_more": False},
+        )
+        notion_query = {"filter": {"property": "상태", "status": {"does_not_equal": "완료"}}, "page_size": 50}
+        db._lookup_pages(notion_query, "issue")
+
+        _, kwargs = mock_post.call_args
+        assert "filter" not in kwargs["json"]
+        assert kwargs["json"].get("page_size") == 50
+
+    @patch("notion_client.requests.post")
+    def test_title_property_auto_added_to_filter_properties(self, mock_post, db):
+        """filter_properties에 title 컬럼이 없으면 자동으로 추가."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"results": [], "has_more": False},
+        )
+        notion_query = {"filter_properties": ["상태"]}
+        db._lookup_pages(notion_query, "issue")
+
+        _, kwargs = mock_post.call_args
+        assert "issue" in kwargs["params"]["filter_properties"]
+
+    @patch("notion_client.requests.post")
+    def test_title_property_already_in_filter_properties_not_duplicated(self, mock_post, db):
+        """filter_properties에 title 컬럼이 이미 있으면 중복 추가하지 않음."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"results": [], "has_more": False},
+        )
+        notion_query = {"filter_properties": ["issue", "상태"]}
+        db._lookup_pages(notion_query, "issue")
+
+        _, kwargs = mock_post.call_args
+        assert kwargs["params"]["filter_properties"].count("issue") == 1
+
+    @patch("notion_client.requests.post")
+    def test_pagination_fetches_all_pages(self, mock_post, db):
+        """has_more=True이면 next_cursor로 다음 페이지까지 모두 조회."""
+        page1 = {"id": "p1", "properties": {}}
+        page2 = {"id": "p2", "properties": {}}
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"results": [page1], "has_more": True, "next_cursor": "cur-1"}),
+            MagicMock(status_code=200, json=lambda: {"results": [page2], "has_more": False}),
+        ]
+
+        pages = db._lookup_pages({}, "issue")
+
+        assert len(pages) == 2
+        assert mock_post.call_count == 2
+        # 두 번째 요청에 start_cursor 포함 확인
+        second_body = mock_post.call_args_list[1][1]["json"]
+        assert second_body["start_cursor"] == "cur-1"
+
+    @patch("notion_client.requests.post")
+    def test_api_error_returns_empty_list(self, mock_post, db):
+        """API 오류 시 빈 리스트 반환."""
+        mock_post.return_value = MagicMock(status_code=500, text="Server Error")
+        pages = db._lookup_pages({}, "issue")
+        assert pages == []
+
+    @patch("notion_client.requests.post")
+    def test_upsert_finds_filtered_out_page(self, mock_post, db, mappings):
+        """notion_query filter로 제외되는 페이지(완료 상태 등)도 중복 방지에 활용."""
+        # 완료 상태 페이지가 lookup에서 반환됨 (filter 제거 덕분)
+        existing = {
+            "id": "page-done",
+            "properties": {"issue": {"title": [{"text": {"content": "DONE-1"}}]}},
+        }
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"results": [existing], "has_more": False}),
+        ]
+        # DONE-1이 lookup에 포함되므로 create가 아닌 patch 호출 예상
+        with patch("notion_client.requests.patch") as mock_patch:
+            mock_patch.return_value = MagicMock(status_code=200)
+            notion_query = {"filter": {"property": "상태", "status": {"does_not_equal": "완료"}}}
+            issues = [Issue(key="DONE-1", fields={"summary": "완료 이슈", "status": {"name": "완료"}})]
+            db.upsert(issues, mappings, notion_query)
+
+        mock_patch.assert_called_once()
+        assert "page-done" in mock_patch.call_args[1]["url"]

@@ -49,7 +49,7 @@ class NotionDatabase:
         return {"rich_text": [{"text": {"content": str(value or "")}}]}
 
     def query(self, notion_query: dict = None) -> dict:
-        """Notion DB를 조회하여 페이지 목록 반환.
+        """Notion DB를 단일 페이지 조회하여 원시 응답 반환.
 
         Args:
             notion_query: sync_config.yaml의 notion_query. filter/sorts/page_size는 body,
@@ -72,6 +72,52 @@ class NotionDatabase:
 
         return response.json()
 
+    def _lookup_pages(self, notion_query: dict, title_property: str) -> List[dict]:
+        """upsert용 전체 페이지 조회.
+
+        - filter 제거: 필터 밖 페이지(예: 완료 상태)도 중복 판별에 포함
+        - filter_properties에 title 컬럼 자동 포함
+        - has_more/next_cursor 기반 페이지네이션 처리
+        """
+        # filter 제거 후 None 값 제외
+        lookup_q = {k: v for k, v in (notion_query or {}).items() if k != "filter" and v is not None}
+
+        # filter_properties가 지정된 경우 title 컬럼 누락 방지
+        filter_props = lookup_q.get("filter_properties")
+        if filter_props is not None and title_property not in filter_props:
+            lookup_q["filter_properties"] = list(filter_props) + [title_property]
+
+        all_pages: List[dict] = []
+        start_cursor: str | None = None
+
+        while True:
+            body = {k: v for k, v in lookup_q.items() if k != "filter_properties"}
+            if start_cursor:
+                body["start_cursor"] = start_cursor
+
+            filter_properties = lookup_q.get("filter_properties")
+            response = requests.post(
+                url=NotionApi.query_data_source_url(self.data_source_id),
+                headers=self._headers(),
+                json=body,
+                params={"filter_properties": filter_properties} if filter_properties else None,
+            )
+
+            if response.status_code != 200:
+                logger.error(f"Notion lookup 오류 {response.status_code}: {response.text}")
+                return []
+
+            data = response.json()
+            all_pages.extend(data.get("results", []))
+
+            if not data.get("has_more"):
+                break
+
+            start_cursor = data.get("next_cursor")
+            logger.debug(f"다음 페이지 조회 중 (현재까지 {len(all_pages)}건)")
+
+        return all_pages
+
     def upsert(self, issues: List[Issue], mappings: List[FieldMapping], notion_query: dict = None) -> None:
         """Jira 이슈를 Notion DB에 upsert (title 기준 find → update or create).
 
@@ -86,10 +132,10 @@ class NotionDatabase:
             logger.error("title 타입 매핑이 없어 upsert를 수행할 수 없습니다.")
             return
 
-        # 기존 Notion 페이지 조회 → title값: page_id 딕셔너리 구성
-        existing = self.query(notion_query)
+        # 기존 Notion 페이지 전체 조회 → title값: page_id 딕셔너리 구성
+        all_pages = self._lookup_pages(notion_query, title_mapping.notion_property)
         page_lookup: dict[str, str] = {}
-        for page in existing.get("results", []):
+        for page in all_pages:
             title_prop = page.get("properties", {}).get(title_mapping.notion_property, {})
             title_texts = title_prop.get("title", [])
             if title_texts:
