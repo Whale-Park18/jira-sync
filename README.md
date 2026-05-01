@@ -62,7 +62,7 @@ sequenceDiagram
     participant notion as notion_client.py
     participant NotionAPI as Notion API
 
-    User->>sync: python sync.py [--dry-run]
+    User->>sync: python sync.py [--scan-mode filtered|full] [--dry-run]
     sync->>env: load_env()
     env-->>sync: Env
     sync->>config: load_config()
@@ -148,18 +148,76 @@ cp sync_config.example.yaml sync_config.yaml
 
 이후 `jira_query.jql`, `notion_query`, `mappings`를 프로젝트에 맞게 수정합니다.
 
+### sync_config.yaml 구조
+
+```yaml
+jira_query:
+  jql: "..."          # Jira 이슈 필터 조건
+  maxResults: 100
+  fields:             # 조회할 Jira 필드 목록
+    - summary
+
+notion_query:
+  filter:             # Notion DB 필터 (선택) — --scan-mode full 시 무시됨
+    property: 상태
+    status:
+      does_not_equal: 완료
+  sorts:              # 정렬 (선택)
+    - property: 생성일
+      direction: descending
+  page_size: 100      # 최대 100 (선택)
+  filter_properties:  # 응답에 포함할 컬럼 (선택, null이면 전체)
+    - issue
+
+mappings:
+  - jira_field: key              # 점 표기법 지원: key, fields.summary, fields.status.name 등
+    notion_property: issue       # Notion DB 컬럼명
+    notion_type: title           # upsert 기준 키 (정확히 1개 필수)
+  - jira_field: fields.summary
+    notion_property: 제목
+    notion_type: rich_text       # title | rich_text | select | status | date | url
+```
+
+**`notion_type` 지원 값**
+
+| 값 | 설명 |
+|---|---|
+| `title` | upsert 기준 키. 정확히 1개 필수 |
+| `rich_text` | 일반 텍스트 |
+| `select` | 단일 선택 |
+| `status` | 상태 |
+| `date` | 날짜 (ISO 8601) |
+| `url` | URL |
+
 ## 사용법
 
 ```bash
-# 기본 실행
+# 기본 실행 — --scan-mode 생략 시 filtered가 기본값으로 적용됨
 python sync.py
 
 # 다른 설정 파일 사용
 python sync.py --config other_config.yaml
 
-# 실제 반영 없이 결과만 확인
+# 실제 반영 없이 결과만 확인 (--scan-mode 없이도 사용 가능)
 python sync.py --dry-run
+
+# 전체 스캔 — notion_query.filter를 무시하고 DB 전체 페이지 조회
+# (완료 처리된 이슈 등 필터 밖 페이지도 중복 판별 대상에 포함)
+python sync.py --scan-mode full
+
+# 조합 예시 — 두 옵션은 독립적으로 조합 가능
+python sync.py --scan-mode filtered --dry-run
+python sync.py --scan-mode full --dry-run
 ```
+
+### CLI 옵션
+
+| 옵션 | 기본값 | 설명 |
+|---|---|---|
+| `--scan-mode filtered` | ✓ | `notion_query.filter`를 적용해 Notion 조회 범위를 좁힘 |
+| `--scan-mode full` | | `notion_query.filter`를 제거하고 DB 전체 페이지를 스캔 |
+| `--dry-run` | | Notion에 쓰지 않고 Jira 조회 결과만 출력. `--scan-mode`와 독립적으로 사용 가능 |
+| `--config PATH` | `sync_config.yaml` | 사용할 설정 파일 지정 |
 
 ## 테스트
 

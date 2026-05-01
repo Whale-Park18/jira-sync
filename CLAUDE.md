@@ -25,6 +25,9 @@ python sync.py --config other_config.yaml
 # Notion에 반영하지 않고 결과만 확인
 python sync.py --dry-run
 
+# notion_query.filter를 제거하고 전체 페이지 스캔 (완료 상태 등 필터 밖 페이지도 중복 판별)
+python sync.py --scan-mode full
+
 # 테스트 실행
 python -m pytest tests/ -v
 ```
@@ -68,6 +71,22 @@ sync.py
 | `JIRA_API_TOKEN` | Jira API 토큰 |
 | `NOTION_API_KEY` | Notion integration secret |
 | `NOTION_DATA_SOURCE_ID` | 동기화 대상 Notion Data Source ID |
+
+## 하네스: jira-sync
+
+**목표:** architect → developer → tester 파이프라인으로 코드 변경을 안전하게 처리하고, YAML 설정 작성을 안내한다.
+
+**트리거:**
+- 코드 변경 요청 (기능 추가, 버그 수정, 리팩터링 등) → `jira-sync-dev` 스킬 사용
+- 설정 파일 작성/수정 요청 (JQL, 매핑, sync_config.yaml) → `jira-sync-config` 스킬 사용
+- 단순 질문은 직접 응답 가능
+
+**변경 이력:**
+| 날짜 | 변경 내용 | 대상 | 사유 |
+|------|----------|------|------|
+| 2026-04-21 | 초기 구성 | 전체 | - |
+
+---
 
 ### 동기화 설정 (sync_config.yaml)
 
