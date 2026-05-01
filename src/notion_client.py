@@ -72,15 +72,20 @@ class NotionDatabase:
 
         return response.json()
 
-    def _lookup_pages(self, notion_query: dict, title_property: str) -> List[dict]:
-        """upsert용 전체 페이지 조회.
+    def _lookup_pages(self, notion_query: dict, title_property: str, scan_mode: str = "filtered") -> List[dict]:
+        """upsert용 페이지 조회.
 
-        - filter 제거: 필터 밖 페이지(예: 완료 상태)도 중복 판별에 포함
+        - scan_mode="full": filter 제거 → 필터 밖 페이지(예: 완료 상태)까지 포함하여 중복 판별
+        - scan_mode="filtered"(기본): filter 유지 → 빠르지만 필터 범위 밖 페이지는 중복 판별 대상에서 제외
         - filter_properties에 title 컬럼 자동 포함
         - has_more/next_cursor 기반 페이지네이션 처리
         """
-        # filter 제거 후 None 값 제외
-        lookup_q = {k: v for k, v in (notion_query or {}).items() if k != "filter" and v is not None}
+        # scan_mode == "full" 일 때만 filter 키 제거. 그 외(기본 "filtered")는 filter 유지하여 조회 속도 확보
+        lookup_q = {
+            k: v
+            for k, v in (notion_query or {}).items()
+            if not (scan_mode == "full" and k == "filter") and v is not None
+        }
 
         # filter_properties가 지정된 경우 title 컬럼 누락 방지
         filter_props = lookup_q.get("filter_properties")
@@ -118,13 +123,22 @@ class NotionDatabase:
 
         return all_pages
 
-    def upsert(self, issues: List[Issue], mappings: List[FieldMapping], notion_query: dict = None) -> None:
+    def upsert(
+        self,
+        issues: List[Issue],
+        mappings: List[FieldMapping],
+        notion_query: dict = None,
+        scan_mode: str = "filtered",
+    ) -> None:
         """Jira 이슈를 Notion DB에 upsert (title 기준 find → update or create).
 
         Args:
             issues: JiraClient로 조회한 이슈 목록
             mappings: mapping_config.yaml의 mappings
             notion_query: Notion 조회 시 적용할 필터/정렬 body
+            scan_mode: "filtered"(기본)면 notion_query.filter를 그대로 lookup에 적용.
+                       "full"이면 lookup 단계에서 filter를 제거하고 전체 스캔 (필터 범위 밖 페이지도
+                       중복 판별 대상에 포함).
         """
         # notion_type: title 인 매핑이 upsert 키
         title_mapping = next((m for m in mappings if m.notion_type == "title"), None)
@@ -132,8 +146,9 @@ class NotionDatabase:
             logger.error("title 타입 매핑이 없어 upsert를 수행할 수 없습니다.")
             return
 
-        # 기존 Notion 페이지 전체 조회 → title값: page_id 딕셔너리 구성
-        all_pages = self._lookup_pages(notion_query, title_mapping.notion_property)
+        # 기존 Notion 페이지 조회 → title값: page_id 딕셔너리 구성
+        # scan_mode를 _lookup_pages에 전달하여 filter 적용 여부 제어
+        all_pages = self._lookup_pages(notion_query, title_mapping.notion_property, scan_mode=scan_mode)
         page_lookup: dict[str, str] = {}
         for page in all_pages:
             title_prop = page.get("properties", {}).get(title_mapping.notion_property, {})

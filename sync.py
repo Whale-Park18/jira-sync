@@ -23,17 +23,28 @@ from notion_client import NotionDatabase
     is_flag=True,
     help="실제 반영 없이 결과만 출력"
 )
-def main(config: str, dry_run: bool) -> None:
+@click.option(
+    "--scan-mode",
+    type=click.Choice(["filtered", "full"]),  # 향후 모드 확장(incremental 등) 용이
+    default="filtered",
+    show_default=True,
+    help="filtered(기본): notion_query.filter 적용 / full: filter 제거 후 전체 페이지 스캔 (중복 방지, 속도 느림)"
+)
+def main(config: str, dry_run: bool, scan_mode: str) -> None:
     """Jira → Notion 단방향 동기화
 
     Args:
         config: 동기화 설정 파일 경로
         dry_run: Notion에 쓰지 않고 매핑 결과만 출력
+        scan_mode: "filtered"이면 notion_query.filter를 적용해 lookup (기본).
+                   "full"이면 filter 제거 후 전체 페이지 스캔 → 필터 밖 페이지(예: 완료 상태)도
+                   중복 판별 대상에 포함.
     """
 
     # 파일 저장 설정 (500MB마다 새 파일 생성, 10일치 보관)
     logger.add("sync.log", rotation="500 MB", retention="10 days", level="INFO")
-    logger.info(f"config : {config}, dry-run : {dry_run}")
+    # CLI 옵션 식별자와 로그 키를 일치시켜 추적 용이
+    logger.info(f"config : {config}, dry-run : {dry_run}, scan-mode : {scan_mode}")
 
     # 설정 파일 읽기
     env: Env = load_env()
@@ -64,7 +75,8 @@ def main(config: str, dry_run: bool) -> None:
         logger.info("Notion DB 갱신 시작")
 
         notion_client = NotionDatabase(env)
-        notion_client.upsert(issues, sync_config.mappings, sync_config.notion_query)
+        # scan_mode를 upsert에 그대로 전달 (lookup 단계에서 filter 적용 여부 결정)
+        notion_client.upsert(issues, sync_config.mappings, sync_config.notion_query, scan_mode=scan_mode)
 
         logger.info("Notion DB 갱신 완료")
 

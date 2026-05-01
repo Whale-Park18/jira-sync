@@ -197,13 +197,14 @@ class TestLookupPages:
 
     @patch("notion_client.requests.post")
     def test_filter_stripped_from_lookup(self, mock_post, db):
-        """notion_query의 filter가 lookup 요청 body에 포함되지 않아야 함."""
+        """scan_mode="full"일 때 notion_query의 filter가 lookup 요청 body에 포함되지 않아야 함."""
         mock_post.return_value = MagicMock(
             status_code=200,
             json=lambda: {"results": [], "has_more": False},
         )
         notion_query = {"filter": {"property": "상태", "status": {"does_not_equal": "완료"}}, "page_size": 50}
-        db._lookup_pages(notion_query, "issue")
+        # scan_mode="full" 전달: filter 제거 동작 검증
+        db._lookup_pages(notion_query, "issue", scan_mode="full")
 
         _, kwargs = mock_post.call_args
         assert "filter" not in kwargs["json"]
@@ -276,7 +277,75 @@ class TestLookupPages:
             mock_patch.return_value = MagicMock(status_code=200)
             notion_query = {"filter": {"property": "상태", "status": {"does_not_equal": "완료"}}}
             issues = [Issue(key="DONE-1", fields={"summary": "완료 이슈", "status": {"name": "완료"}})]
-            db.upsert(issues, mappings, notion_query)
+            # scan_mode="full"로 호출하여 filter 무시하고 전체 스캔 → 완료 페이지도 lookup에 포함
+            db.upsert(issues, mappings, notion_query, scan_mode="full")
 
         mock_patch.assert_called_once()
         assert "page-done" in mock_patch.call_args[1]["url"]
+
+    @patch("notion_client.requests.post")
+    def test_filter_kept_when_scan_mode_filtered(self, mock_post, db):
+        """scan_mode="filtered"(기본)에서는 filter가 요청 body에 그대로 포함되어야 함."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"results": [], "has_more": False},
+        )
+        notion_filter = {"property": "상태", "status": {"does_not_equal": "완료"}}
+        notion_query = {"filter": notion_filter, "page_size": 50}
+        # scan_mode="filtered" 명시 호출
+        db._lookup_pages(notion_query, "issue", scan_mode="filtered")
+
+        _, kwargs = mock_post.call_args
+        # filter 유지 검증
+        assert kwargs["json"].get("filter") == notion_filter
+        assert kwargs["json"].get("page_size") == 50
+
+    @patch("notion_client.requests.post")
+    def test_filter_stripped_when_scan_mode_full(self, mock_post, db):
+        """scan_mode="full"에서 filter가 body에서 제거되는지 검증."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"results": [], "has_more": False},
+        )
+        notion_query = {
+            "filter": {"property": "상태", "status": {"does_not_equal": "완료"}},
+            "sorts": [{"property": "생성일", "direction": "descending"}],
+            "page_size": 30,
+        }
+        db._lookup_pages(notion_query, "issue", scan_mode="full")
+
+        _, kwargs = mock_post.call_args
+        # filter는 제거, 그 외 키(sorts/page_size)는 유지되어야 함
+        assert "filter" not in kwargs["json"]
+        assert kwargs["json"].get("sorts") == [{"property": "생성일", "direction": "descending"}]
+        assert kwargs["json"].get("page_size") == 30
+
+    @patch("notion_client.requests.post")
+    def test_scan_mode_defaults_to_filtered(self, mock_post, db):
+        """scan_mode 파라미터 미지정 호출 시 기본값("filtered")으로 filter 유지 동작."""
+        mock_post.return_value = MagicMock(
+            status_code=200,
+            json=lambda: {"results": [], "has_more": False},
+        )
+        notion_filter = {"property": "상태", "status": {"does_not_equal": "완료"}}
+        notion_query = {"filter": notion_filter}
+        # scan_mode 파라미터 생략 호출
+        db._lookup_pages(notion_query, "issue")
+
+        _, kwargs = mock_post.call_args
+        # 기본 "filtered"이므로 filter가 유지되어야 함
+        assert kwargs["json"].get("filter") == notion_filter
+
+    def test_upsert_passes_scan_mode_to_lookup(self, db, mappings):
+        """upsert(scan_mode="full") 호출 시 _lookup_pages에 scan_mode="full"이 전달되는지 검증."""
+        # _lookup_pages를 mock으로 대체하여 전달 인자 검증
+        with patch.object(db, "_lookup_pages", return_value=[]) as mock_lookup:
+            with patch("notion_client.requests.post") as mock_post:
+                mock_post.return_value = MagicMock(status_code=200)
+                issues = [Issue(key="X-1", fields={"summary": "s", "status": {"name": "할 일"}})]
+                db.upsert(issues, mappings, notion_query={"filter": {"x": 1}}, scan_mode="full")
+
+        mock_lookup.assert_called_once()
+        # 키워드 인자로 scan_mode="full"이 전달되었는지 확인
+        _, kwargs = mock_lookup.call_args
+        assert kwargs.get("scan_mode") == "full"
