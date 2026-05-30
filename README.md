@@ -14,7 +14,8 @@ Jira를 source of truth로 유지하면서 Notion에서 이슈 현황을 시각�
 jira-sync/
 ├── sync.py                 # CLI 진입점
 ├── sync_config.yaml        # JQL 쿼리, Notion 쿼리, 필드 매핑 설정
-├── requirements.txt
+├── pyproject.toml          # 패키지 메타데이터 · 의존성 · entry point
+├── requirements.txt        # 로컬 개발용 의존성 (pyproject.toml과 병존)
 ├── conftest.py             # pytest용 src/ 경로 등록
 │
 ├── src/
@@ -117,8 +118,28 @@ sequenceDiagram
 
 ## 설치
 
+### 로컬 개발
+
 ```bash
 pip install -r requirements.txt
+```
+
+### pip 패키지로 설치 (GitHub)
+
+```bash
+# GitHub 레포에서 직접 설치 — sync 커맨드가 PATH에 등록됨
+pip install git+https://github.com/<user>/jira-sync.git
+
+# dev 의존성 포함 (pytest)
+pip install -e ".[dev]"
+```
+
+설치 후 `python sync.py` 대신 `sync` 커맨드로 실행할 수 있습니다.
+
+```bash
+sync
+sync --dry-run
+sync --scan-mode full
 ```
 
 ## 환경변수 설정

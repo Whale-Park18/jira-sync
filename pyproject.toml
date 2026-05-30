@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jira-sync"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "python-dotenv",
+    "requests",
+    "pyyaml",
+    "click",
+    "loguru",
+]
+
+[project.optional-dependencies]
+# 개발·테스트 전용 의존성 (Docker 이미지에는 포함하지 않음)
+dev = ["pytest"]
+
+# pip install git+https://... 후 `sync` 커맨드로 실행 가능
+[project.scripts]
+sync = "sync:main"
+
+[tool.setuptools]
+# sync.py 단일 모듈을 패키지로 포함
+py-modules = ["sync"]
+
+[tool.setuptools.packages.find]
+# src/ 패키지만 설치 대상으로 포함 (tests/, conftest.py 제외)
+include = ["src*"]
