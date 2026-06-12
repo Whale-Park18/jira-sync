@@ -69,5 +69,10 @@ class JiraClient:
 
             logger.debug(f"다음 페이지 조회 중 (현재까지 {len(all_issues)}건)")
 
+        # 조회된 이슈 전체 내용을 DEBUG로 출력 (응답 리스트 가시화)
+        logger.debug("Jira 조회 이슈 목록:")
+        for issue in all_issues:
+            logger.debug(f"    [{issue.key}] {issue.fields}")
+
         logger.info(f"Jira 이슈 총 {len(all_issues)}건 조회 완료")
         return all_issues

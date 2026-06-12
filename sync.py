@@ -25,10 +25,11 @@ from notion_client import NotionDatabase
 )
 @click.option(
     "--scan-mode",
-    type=click.Choice(["filtered", "full"]),  # 향후 모드 확장(incremental 등) 용이
-    default="filtered",
+    type=click.Choice(["keys", "filtered", "full"]),  # 향후 모드 확장(incremental 등) 용이
+    default="keys",
     show_default=True,
-    help="filtered(기본): notion_query.filter 적용 / full: filter 제거 후 전체 페이지 스캔 (중복 방지, 속도 느림)"
+    help="keys(기본): JQL 결과 키만 or-필터로 조회 (중복 방지 + 효율적) / "
+         "filtered: notion_query.filter 적용 / full: filter 제거 후 전체 페이지 스캔 (속도 느림)"
 )
 def main(config: str, dry_run: bool, scan_mode: str) -> None:
     """Jira → Notion 단방향 동기화
@@ -36,7 +37,9 @@ def main(config: str, dry_run: bool, scan_mode: str) -> None:
     Args:
         config: 동기화 설정 파일 경로
         dry_run: Notion에 쓰지 않고 매핑 결과만 출력
-        scan_mode: "filtered"이면 notion_query.filter를 적용해 lookup (기본).
+        scan_mode: "keys"(기본)이면 JQL 결과 이슈 키만 or-필터로 조회 → notion_query.filter와
+                   무관하게 기존 페이지를 찾아 중복 생성 방지(ceil(N/100) 요청).
+                   "filtered"이면 notion_query.filter를 적용해 lookup.
                    "full"이면 filter 제거 후 전체 페이지 스캔 → 필터 밖 페이지(예: 완료 상태)도
                    중복 판별 대상에 포함.
     """
@@ -70,15 +73,16 @@ def main(config: str, dry_run: bool, scan_mode: str) -> None:
     logger.info(f"Jira 조회된 이슈 수: {len(issues)}")
     logger.info("Jira 이슈 검색 완료")
 
-    # Notion DB 갱신
-    if not dry_run:
-        logger.info("Notion DB 갱신 시작")
+    # Notion DB 갱신 (dry-run이어도 lookup은 수행하고 쓰기만 생략 → update/created 예측 로그 출력)
+    logger.info("Notion DB 갱신 시뮬레이션 시작 (dry-run)" if dry_run else "Notion DB 갱신 시작")
 
-        notion_client = NotionDatabase(env)
-        # scan_mode를 upsert에 그대로 전달 (lookup 단계에서 filter 적용 여부 결정)
-        notion_client.upsert(issues, sync_config.mappings, sync_config.notion_query, scan_mode=scan_mode)
+    notion_client = NotionDatabase(env)
+    # scan_mode·dry_run을 upsert에 전달 (filter 적용 여부 / 실제 쓰기 여부 결정)
+    notion_client.upsert(
+        issues, sync_config.mappings, sync_config.notion_query, scan_mode=scan_mode, dry_run=dry_run
+    )
 
-        logger.info("Notion DB 갱신 완료")
+    logger.info("Notion DB 갱신 시뮬레이션 완료 (dry-run)" if dry_run else "Notion DB 갱신 완료")
 
 if __name__ == "__main__":
     main()

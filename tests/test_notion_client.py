@@ -190,6 +190,172 @@ class TestUpsert:
 
 
 # ──────────────────────────────────────────────
+# upsert (dry-run)
+# ──────────────────────────────────────────────
+
+class TestUpsertDryRun:
+
+    def _existing_page(self, issue_key: str, page_id: str) -> dict:
+        return {
+            "id": page_id,
+            "properties": {"issue": {"title": [{"text": {"content": issue_key}}]}},
+        }
+
+    @patch("notion_client.requests.patch")
+    @patch("notion_client.requests.post")
+    def test_dry_run_create_skips_write(self, mock_post, mock_patch, db, mappings):
+        """dry-run + 신규 이슈: lookup(POST query)만 수행하고 create POST/patch는 호출하지 않음."""
+        # lookup 응답 (빈 결과 → created 판별)
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"results": [], "has_more": False})
+
+        issues = [Issue(key="NEW-1", fields={"summary": "새 이슈", "status": {"name": "할 일"}})]
+        db.upsert(issues, mappings, dry_run=True)
+
+        # POST는 lookup 1회만 (create 쓰기 없음), PATCH 미호출
+        assert mock_post.call_count == 1
+        mock_patch.assert_not_called()
+
+    @patch("notion_client.requests.patch")
+    @patch("notion_client.requests.post")
+    def test_dry_run_update_skips_write(self, mock_post, mock_patch, db, mappings):
+        """dry-run + 기존 이슈: lookup만 수행하고 PATCH 쓰기는 호출하지 않음."""
+        existing = self._existing_page("EXIST-1", "page-abc")
+        mock_post.return_value = MagicMock(
+            status_code=200, json=lambda: {"results": [existing], "has_more": False}
+        )
+
+        issues = [Issue(key="EXIST-1", fields={"summary": "기존 이슈", "status": {"name": "진행 중"}})]
+        db.upsert(issues, mappings, dry_run=True)
+
+        # lookup 1회만, 쓰기(PATCH) 미호출
+        assert mock_post.call_count == 1
+        mock_patch.assert_not_called()
+
+    @patch("notion_client.requests.patch")
+    @patch("notion_client.requests.post")
+    def test_default_not_dry_run_performs_write(self, mock_post, mock_patch, db, mappings):
+        """dry_run 미지정(기본 False): 기존처럼 실제 create POST가 수행됨."""
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"results": [], "has_more": False}),  # lookup
+            MagicMock(status_code=200),                                                     # create
+        ]
+        issues = [Issue(key="NEW-1", fields={"summary": "새 이슈", "status": {"name": "할 일"}})]
+        db.upsert(issues, mappings)
+
+        # lookup + create = 2회 호출 (쓰기 수행됨)
+        assert mock_post.call_count == 2
+
+
+# ──────────────────────────────────────────────
+# _lookup_pages_by_keys (scan_mode="keys")
+# ──────────────────────────────────────────────
+
+class TestLookupPagesByKeys:
+
+    @patch("notion_client.requests.post")
+    def test_builds_or_title_equals_filter(self, mock_post, db):
+        """키별 title.equals 조건을 or로 묶어 단일 요청 전송."""
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"results": [], "has_more": False})
+        db._lookup_pages_by_keys("issue", ["WPF-496", "WPF-459"])
+
+        assert mock_post.call_count == 1
+        _, kwargs = mock_post.call_args
+        assert kwargs["json"]["filter"] == {
+            "or": [
+                {"property": "issue", "title": {"equals": "WPF-496"}},
+                {"property": "issue", "title": {"equals": "WPF-459"}},
+            ]
+        }
+        # title 컬럼만 응답에 포함
+        assert kwargs["params"] == {"filter_properties": ["issue"]}
+
+    @patch("notion_client.requests.post")
+    def test_drops_falsy_and_dedups_keys(self, mock_post, db):
+        """None/빈 문자열 제거 + 중복 키 제거(순서 유지)."""
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"results": [], "has_more": False})
+        db._lookup_pages_by_keys("issue", ["A-1", "A-1", None, "", "A-2"])
+
+        _, kwargs = mock_post.call_args
+        conditions = kwargs["json"]["filter"]["or"]
+        assert [c["title"]["equals"] for c in conditions] == ["A-1", "A-2"]
+
+    @patch("notion_client.requests.post")
+    def test_empty_keys_no_request(self, mock_post, db):
+        """유효 키가 없으면 요청하지 않고 빈 리스트 반환."""
+        result = db._lookup_pages_by_keys("issue", [None, ""])
+        assert result == []
+        mock_post.assert_not_called()
+
+    @patch("notion_client.requests.post")
+    def test_batches_over_100_keys(self, mock_post, db):
+        """100개 초과 키는 배치로 나눠 여러 번 요청."""
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: {"results": [], "has_more": False})
+        keys = [f"K-{i}" for i in range(150)]  # 100 + 50 → 2 배치
+        db._lookup_pages_by_keys("issue", keys)
+
+        assert mock_post.call_count == 2
+        first_or = mock_post.call_args_list[0][1]["json"]["filter"]["or"]
+        second_or = mock_post.call_args_list[1][1]["json"]["filter"]["or"]
+        assert len(first_or) == 100
+        assert len(second_or) == 50
+
+    @patch("notion_client.requests.post")
+    def test_pagination_within_batch(self, mock_post, db):
+        """배치 내 has_more=True면 next_cursor로 추가 조회."""
+        page1 = {"id": "p1", "properties": {}}
+        page2 = {"id": "p2", "properties": {}}
+        mock_post.side_effect = [
+            MagicMock(status_code=200, json=lambda: {"results": [page1], "has_more": True, "next_cursor": "cur-1"}),
+            MagicMock(status_code=200, json=lambda: {"results": [page2], "has_more": False}),
+        ]
+        pages = db._lookup_pages_by_keys("issue", ["A-1"])
+        assert len(pages) == 2
+        assert mock_post.call_args_list[1][1]["json"]["start_cursor"] == "cur-1"
+
+
+class TestUpsertKeysMode:
+
+    @patch("notion_client.requests.patch")
+    @patch("notion_client.requests.post")
+    def test_finds_filtered_out_page_via_keys(self, mock_post, mock_patch, db, mappings):
+        """버그 재현: 상태 필터로 가려질 완료 페이지를 키 조회로 찾아 create 아닌 patch."""
+        # 키 조회 응답: 완료 상태였어도 키 매칭으로 반환됨
+        existing = {
+            "id": "page-done",
+            "properties": {"issue": {"title": [{"text": {"content": "WPF-496"}}]}},
+        }
+        mock_post.return_value = MagicMock(
+            status_code=200, json=lambda: {"results": [existing], "has_more": False}
+        )
+        mock_patch.return_value = MagicMock(status_code=200)
+
+        notion_query = {"filter": {"property": "상태", "status": {"does_not_equal": "완료"}}}
+        issues = [Issue(key="WPF-496", fields={"summary": "완료 이슈", "status": {"name": "완료"}})]
+        # 기본 scan_mode="keys"로 호출
+        db.upsert(issues, mappings, notion_query)
+
+        # 키 조회로 기존 페이지를 찾았으므로 patch(업데이트) 호출, 신규 create 안 함
+        mock_patch.assert_called_once()
+        assert "page-done" in mock_patch.call_args[1]["url"]
+
+    def test_default_scan_mode_uses_key_lookup(self, db, mappings):
+        """scan_mode 미지정(기본 keys) → _lookup_pages_by_keys 경유."""
+        with patch.object(db, "_lookup_pages_by_keys", return_value=[]) as mock_keys, \
+             patch.object(db, "_lookup_pages", return_value=[]) as mock_filtered, \
+             patch("notion_client.requests.post") as mock_post:
+            mock_post.return_value = MagicMock(status_code=200)
+            issues = [Issue(key="X-1", fields={"summary": "s", "status": {"name": "할 일"}})]
+            db.upsert(issues, mappings)
+
+        mock_keys.assert_called_once()
+        mock_filtered.assert_not_called()
+        # title 값(이슈 키) 목록이 전달되는지 확인
+        args, _ = mock_keys.call_args
+        assert args[0] == "issue"
+        assert args[1] == ["X-1"]
+
+
+# ──────────────────────────────────────────────
 # _lookup_pages
 # ──────────────────────────────────────────────
 

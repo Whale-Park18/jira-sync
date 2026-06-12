@@ -63,7 +63,7 @@ sequenceDiagram
     participant notion as notion_client.py
     participant NotionAPI as Notion API
 
-    User->>sync: python sync.py [--scan-mode filtered|full] [--dry-run]
+    User->>sync: python sync.py [--scan-mode keys|filtered|full] [--dry-run]
     sync->>env: load_env()
     env-->>sync: Env
     sync->>config: load_config()
@@ -72,18 +72,23 @@ sequenceDiagram
     sync->>jira: issue_search()
     jira->>JiraAPI: POST /rest/api/3/search/jql
     JiraAPI-->>jira: issues[]
-    jira-->>sync: List[Issue]
+    jira-->>sync: List[Issue] (DEBUG 로그로 전체 출력)
 
-    alt dry-run
-        sync->>User: 동기화 없이 종료
-    else 실제 동기화
-        sync->>notion: upsert(issues, mappings, notion_query)
-        notion->>NotionAPI: POST /data_sources/{id}/query
-        NotionAPI-->>notion: 기존 페이지 목록
+    sync->>notion: upsert(issues, mappings, notion_query, scan_mode, dry_run)
 
-        loop 이슈별 처리
-            notion->>notion: Schema.from_issue(issue, mappings)
+    alt scan_mode == keys (기본)
+        notion->>NotionAPI: POST /data_sources/{id}/query (이슈 키 title-equals or-필터, 100개씩 배치)
+    else scan_mode == filtered | full
+        notion->>NotionAPI: POST /data_sources/{id}/query (notion_query 기반)
+    end
+    NotionAPI-->>notion: 기존 페이지 목록 (DEBUG 로그로 전체 출력)
 
+    loop 이슈별 처리
+        notion->>notion: Schema.from_issue(issue, mappings)
+
+        alt dry-run
+            notion->>User: 로그 "[key] updated/created (dry-run)"
+        else 실제 동기화
             alt 기존 페이지 있음
                 notion->>NotionAPI: PATCH /pages/{id}
                 NotionAPI-->>notion: 200 OK
@@ -91,16 +96,22 @@ sequenceDiagram
                 notion->>NotionAPI: POST /pages
                 NotionAPI-->>notion: 200 OK
             end
+            notion->>User: 로그 "[key] updated/created"
         end
-
-        notion-->>sync: 완료
-        sync->>User: 동기화 완료 로그
     end
+
+    notion-->>sync: 완료
+    sync->>User: 동기화 완료 로그
 ```
 
 ### 동기화 전략
 
 **Upsert by title** — `notion_type: title`로 지정된 매핑 항목을 기준으로 Notion DB에서 기존 페이지를 조회한 뒤, 있으면 update, 없으면 create합니다. 삭제는 수행하지 않습니다.
+
+**기존 페이지 조회 (--scan-mode)**
+- `keys`(기본) — JQL 결과 이슈 키를 `title equals` 조건의 `or` 필터로 묶어 조회(최대 100개씩 배치). `notion_query.filter`와 무관하게 매칭되어, 필터 밖 페이지(예: 완료 상태로 바뀐 이슈)도 정확히 찾아 **중복 생성을 방지**합니다.
+- `filtered` — `notion_query.filter`를 그대로 적용해 조회. 조회 범위는 좁지만, 필터 밖에 있는 기존 페이지는 신규로 오인되어 중복 생성될 수 있습니다.
+- `full` — `filter`를 제거하고 DB 전체를 페이지네이션 스캔. 정확하지만 통신량이 많습니다.
 
 ### 기본 동기화 필드 (sync_config.yaml)
 
@@ -139,6 +150,7 @@ pip install -e ".[dev]"
 ```bash
 sync
 sync --dry-run
+sync --scan-mode filtered
 sync --scan-mode full
 ```
 
@@ -179,7 +191,7 @@ jira_query:
     - summary
 
 notion_query:
-  filter:             # Notion DB 필터 (선택) — --scan-mode full 시 무시됨
+  filter:             # Notion DB 필터 (선택) — --scan-mode keys(기본)·full 시 무시됨
     property: 상태
     status:
       does_not_equal: 완료
@@ -213,17 +225,20 @@ mappings:
 ## 사용법
 
 ```bash
-# 기본 실행 — --scan-mode 생략 시 filtered가 기본값으로 적용됨
+# 기본 실행 — --scan-mode 생략 시 keys가 기본값으로 적용됨 (JQL 결과 키 기반 조회)
 python sync.py
 
 # 다른 설정 파일 사용
 python sync.py --config other_config.yaml
 
-# 실제 반영 없이 결과만 확인 (--scan-mode 없이도 사용 가능)
+# 실제 반영 없이 결과만 확인 — Notion 조회 후 이슈별 update/created 예측만 로그로 출력 (쓰기 없음)
 python sync.py --dry-run
 
+# notion_query.filter를 그대로 적용해 조회 (조회 범위는 좁지만 필터 밖 페이지는 누락될 수 있음)
+python sync.py --scan-mode filtered
+
 # 전체 스캔 — notion_query.filter를 무시하고 DB 전체 페이지 조회
-# (완료 처리된 이슈 등 필터 밖 페이지도 중복 판별 대상에 포함)
+# (완료 처리된 이슈 등 필터 밖 페이지도 중복 판별 대상에 포함, 통신량 많음)
 python sync.py --scan-mode full
 
 # 조합 예시 — 두 옵션은 독립적으로 조합 가능
@@ -235,9 +250,10 @@ python sync.py --scan-mode full --dry-run
 
 | 옵션 | 기본값 | 설명 |
 |---|---|---|
-| `--scan-mode filtered` | ✓ | `notion_query.filter`를 적용해 Notion 조회 범위를 좁힘 |
+| `--scan-mode keys` | ✓ | JQL 결과 이슈 키를 `title equals` or-필터로 조회(100개씩 배치). `notion_query.filter`와 무관하게 기존 페이지를 매칭해 중복 생성을 방지 |
+| `--scan-mode filtered` | | `notion_query.filter`를 적용해 Notion 조회 범위를 좁힘 |
 | `--scan-mode full` | | `notion_query.filter`를 제거하고 DB 전체 페이지를 스캔 |
-| `--dry-run` | | Notion에 쓰지 않고 Jira 조회 결과만 출력. `--scan-mode`와 독립적으로 사용 가능 |
+| `--dry-run` | | 실제 PATCH/POST 없이 Notion 조회 후 이슈별 update/created 예측만 로그로 출력. `--scan-mode`와 독립적으로 사용 가능 |
 | `--config PATH` | `sync_config.yaml` | 사용할 설정 파일 지정 |
 
 ## 테스트
