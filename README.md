@@ -261,3 +261,7 @@ python sync.py --scan-mode full --dry-run
 ```bash
 python -m pytest tests/ -v
 ```
+
+## 라이선스
+
+[MIT](LICENSE)
